@@ -27,8 +27,10 @@ var sundial = require('sundial');
 
 var MessageForm = require('./messageform');
 
-var profileLargeSrc = require('./images/profile-100x100.png');
-var profileSmallSrc = require('./images/profile-64x64.png');
+if (!window.process) {
+  var profileLargeSrc = require('./images/profile-100x100.png');
+  var profileSmallSrc = require('./images/profile-64x64.png');
+}
 
 var Message = React.createClass({
 
@@ -70,17 +72,20 @@ var Message = React.createClass({
 
     if(saveEdit){
       var newNote = _.cloneDeep(this.props.theNote);
-      newNote.messagetext = edits.text;
-      if (edits.timestamp) {
-        newNote.timestamp = edits.timestamp;
+      if (this.props.theNote.messagetext !== edits.text ||
+        (edits.timestamp && this.props.theNote.timestamp !== edits.timestamp)) {
+        newNote.messagetext = edits.text;
+        if (edits.timestamp) {
+          newNote.timestamp = edits.timestamp;
+        }
+        saveEdit(newNote);
       }
-      saveEdit(newNote);
 
       var offset = sundial.getOffsetFromTime(edits.timestamp || this.props.theNote.timestamp) || sundial.getOffset();
 
       this.setState({
         editing : false,
-        note : this.props.theNote.messagetext,
+        note : edits.text,
         when : sundial.formatFromOffset(edits.timestamp || this.props.theNote.timestamp, offset)
       });
     }

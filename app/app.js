@@ -119,9 +119,9 @@ function objectDifference(destination, source) {
   var result = {};
 
   _.forEach(source, function(sourceValue, key) {
-    var destinactionValue = destination[key];
-    if (!_.isEqual(sourceValue, destinactionValue)) {
-      result[key] = destinactionValue;
+    var destinationValue = destination[key];
+    if (!_.isEqual(sourceValue, destinationValue)) {
+      result[key] = destinationValue;
     }
   });
 
@@ -189,6 +189,29 @@ var AppComponent = React.createClass({
       finalizingVerification: false,
       queryParams: queryParams
     };
+  },
+
+  doOauthLogin:function(accessToken){
+
+    var self = this;
+    app.api.user.oauthLogin(accessToken, function(err, data){
+      if(_.isEmpty(err)){
+        app.log('Logged in via OAuth');
+        self.fetchUser();
+        self.setState({authenticated: true});
+        trackMetric('Logged In with OAuth');
+        //go to the specified patient if there is one
+        if(_.isEmpty(data.target)){
+          app.log('No targeted OAuth user so defaulting');
+          self.redirectToDefaultRoute();
+        }else{
+          app.log('Using the targeted OAuth user');
+          app.router.setRoute('/patients/' + data.target + '/data');
+        }
+      }else{
+        app.log('Login via OAuth failed ', err);
+      }
+    });
   },
 
   componentDidMount: function() {
@@ -374,7 +397,7 @@ var AppComponent = React.createClass({
   renderVersion: function() {
     var version = config.VERSION;
     if (version) {
-      version = 'v' + version;
+      version = 'v' + version + ' beta';
       return (
         /* jshint ignore:start */
         <div className="Navbar-version" ref="version">{version}</div>
@@ -390,10 +413,16 @@ var AppComponent = React.createClass({
   },
 
   showLogin: function() {
-    this.renderPage = this.renderLogin;
-    //always check
-    this.finializeSignup();
-    this.setState({page: 'login'});
+    var hashQueryParams = app.router.getQueryParams();
+    if (!_.isEmpty(hashQueryParams.accessToken)) {
+      app.log('logging in via OAuth ...');
+      this.doOauthLogin(hashQueryParams.accessToken);
+    } else {
+      this.renderPage = this.renderLogin;
+      //always check
+      this.finializeSignup();
+      this.setState({page: 'login'});
+    }
   },
 
   renderLogin: function() {
@@ -736,7 +765,6 @@ var AppComponent = React.createClass({
     });
     trackMetric('Viewed Share');
   },
-
   renderPatient: function() {
     // On each state change check if patient object was returned from server
     if (this.isDoneFetchingAndNotFoundPatient()) {
@@ -762,7 +790,6 @@ var AppComponent = React.createClass({
     );
     /* jshint ignore:end */
   },
-
   renderPatientShare: function() {
     // On each state change check if patient object was returned from server
     if (this.isDoneFetchingAndNotFoundPatient()) {
@@ -789,7 +816,6 @@ var AppComponent = React.createClass({
     );
     /* jshint ignore:end */
   },
-
   isDoneFetchingAndNotFoundPatient: function() {
     // Wait for patient object to come back from server
     if (this.state.fetchingPatient) {
@@ -816,7 +842,6 @@ var AppComponent = React.createClass({
     });
     trackMetric('Viewed Profile Create');
   },
-
   renderPatientNew: function() {
     // Make sure user doesn't already have a patient
     if (this.isDoneFetchingAndUserHasPatient()) {
@@ -841,7 +866,6 @@ var AppComponent = React.createClass({
   isSamePersonUserAndPatient: function() {
     return personUtils.isSame(this.state.user, this.state.patient);
   },
-
   showPatientData: function(patientId) {
     this.renderPage = this.renderPatientData;
 
@@ -860,7 +884,6 @@ var AppComponent = React.createClass({
 
     trackMetric('Viewed Data');
   },
-
   renderPatientData: function() {
     // On each state change check if patient object was returned from server
     if (this.isDoneFetchingAndNotFoundPatient()) {
@@ -891,13 +914,13 @@ var AppComponent = React.createClass({
     );
     /* jshint ignore:end */
   },
-
-  handleUpdatePatientData: function(data) {
+  handleUpdatePatientData: function(userid, data) {
+    var patientData = _.cloneDeep(this.state.patientData);
+    patientData[userid] = data;
     this.setState({
-      patientData: data
+      patientData: patientData
     });
   },
-
   login: function(formValues, cb) {
     var user = formValues.user;
     var options = formValues.options;
@@ -1108,14 +1131,13 @@ var AppComponent = React.createClass({
 
     app.api.patient.get(patientId, function(err, patient) {
       if (err) {
-        self.setState({fetchingPatient: false});
-
-        // Patient with id not found, cary on
         if (err.status === 404) {
           app.log('Patient not found with id '+patientId);
-          return;
+          var setupMsg = (patientId === self.state.user.userid) ? usrMessages.ERR_YOUR_ACCOUNT_NOT_CONFIGURED : usrMessages.ERR_ACCOUNT_NOT_CONFIGURED;
+          var dataStoreLink = (<a href="#/patients/new" onClick={self.closeNotification}>{usrMessages.YOUR_ACCOUNT_DATA_SETUP}</a>);
+          return self.handleActionableError(err, setupMsg, dataStoreLink);
         }
-
+        // we can't deal with it so just show error handler
         return self.handleApiError(err, usrMessages.ERR_FETCHING_PATIENT+patientId, buildExceptionDetails());
       }
 
@@ -1172,13 +1194,15 @@ var AppComponent = React.createClass({
         console.save(combinedData, 'blip-input.json');
       };
       patientData = self.processPatientData(combinedData);
+      var allPatientsData = _.cloneDeep(self.state.patientData) || {};
+      allPatientsData[patientId] = patientData;
 
       self.setState({
         bgPrefs: {
           bgClasses: patientData.bgClasses,
           bgUnits: patientData.bgUnits
         },
-        patientData: patientData,
+        patientData: allPatientsData,
         fetchingPatientData: false
       });
     });
@@ -1325,6 +1349,9 @@ var AppComponent = React.createClass({
   },
 
   handleApiError: function(error, message, details) {
+
+    var utcTime = usrMessages.MSG_UTC + new Date().toISOString();
+
     if (message) {
       app.log(message);
     }
@@ -1343,10 +1370,20 @@ var AppComponent = React.createClass({
 
       if(error.status === 500){
         //somethings down, give a bit of time then they can try again
-        body = ( <p> {usrMessages.ERR_SERVICE_DOWN} </p> );
+        body = (
+          <div>
+            <p> {usrMessages.ERR_SERVICE_DOWN} </p>
+            <p> {utcTime} </p>
+          </div>
+        );
       } else if(error.status === 503){
         //offline nothing is going to work
-        body = ( <p> {usrMessages.ERR_OFFLINE} </p> );
+        body = (
+          <div>
+            <p> {usrMessages.ERR_OFFLINE} </p>
+            <p> {utcTime} </p>
+          </div>
+        );
       } else {
 
         var originalErrorMessage = [
@@ -1355,13 +1392,10 @@ var AppComponent = React.createClass({
 
         body = (
           <div>
-            <p>
-              {usrMessages.ERR_GENERIC}
-              <a href="/">refresh your browser</a>
-              {'.'}
-            </p>
+            <p>{usrMessages.ERR_GENERIC}</p>
             <p className="notification-body-small">
               <code>{'Original error message: ' + originalErrorMessage}</code>
+              <br>{utcTime}</br>
             </p>
           </div>
         );
@@ -1374,6 +1408,30 @@ var AppComponent = React.createClass({
         }
       });
     }
+  },
+
+  handleActionableError: function(error, message, link) {
+
+    var utcTime = usrMessages.MSG_UTC + new Date().toISOString();
+
+    message = message || '';
+    //send it quick
+    app.api.errors.log(this.stringifyErrorData(error), message, '');
+
+    var body = (
+      <div>
+        <p>{message}</p>
+        {link}
+      </div>
+    );
+
+    this.setState({
+      notification: {
+        type: 'alert',
+        body: body,
+        isDismissable: true
+      }
+    });
   },
 
   stringifyErrorData: function(data) {
@@ -1391,43 +1449,49 @@ var AppComponent = React.createClass({
   },
 
   showRequestPasswordReset: function() {
-    this.renderPage = this.renderRequestPasswordReset;
-    this.setState({
-      page: 'request-password-reset'
-    });
-  },
 
-  renderRequestPasswordReset: function() {
-    return (
-      /* jshint ignore:start */
-      <RequestPasswordReset
-        onSubmit={app.api.user.requestPasswordReset.bind(app.api)}
-        trackMetric={trackMetric} />
-      /* jshint ignore:end */
-    );
+    this.renderPage = function(){
+      return(
+        /* jshint ignore:start */
+        <RequestPasswordReset
+          onSubmit={app.api.user.requestPasswordReset.bind(app.api)}
+          trackMetric={trackMetric} />
+        /* jshint ignore:end */
+      );
+    };
+
+    this.setState({ page: 'request-password-reset'});
   },
 
   showConfirmPasswordReset: function() {
-    this.renderPage = this.renderConfirmPasswordReset;
-    this.setState({
-      page: 'confirm-password-reset'
-    });
+
+    var givenResetKey = this.getQueryParam('resetKey');
+
+    this.renderPage = function(){
+      return(
+        /* jshint ignore:start */
+        <ConfirmPasswordReset
+          resetKey={givenResetKey}
+          onSubmit={app.api.user.confirmPasswordReset.bind(app.api)}
+          trackMetric={trackMetric} />
+        /* jshint ignore:end */
+      );
+    };
+
+    this.setState({ page: 'confirm-password-reset'});
   },
 
-  renderConfirmPasswordReset: function() {
-    return (
-      /* jshint ignore:start */
-      <ConfirmPasswordReset
-        key={this.getPasswordResetKey()}
-        onSubmit={app.api.user.confirmPasswordReset.bind(app.api)}
-        trackMetric={trackMetric} />
-      /* jshint ignore:end */
-    );
-  },
-
-  getPasswordResetKey: function() {
-    var hashQueryParams = app.router.getQueryParams();
-    return hashQueryParams.resetKey;
+  // look for the specified key in the attached queryParams and return the value
+  //
+  // If we don't find what we asked for then log that the value has not been found.
+  // NOTE: The caller can decide how they want to deal with the fact there is no value in this instance
+  getQueryParam: function(key){
+    var params = app.router.getQueryParams();
+    var val = params[key];
+    if(_.isEmpty(val)){
+      app.log('You asked for ['+key+'] but it was not found in ',params);
+    }
+    return val;
   },
 
   handleExternalPasswordUpdate: function() {
@@ -1437,8 +1501,7 @@ var AppComponent = React.createClass({
       this.setState({page: 'profile'});
     } else {
       // If the user is not logged in, go to the forgot password page
-      this.renderPage = this.renderRequestPasswordReset;
-      this.setState({page: 'request-password-reset'});
+      this.showRequestPasswordReset();
     }
   },
 
@@ -1455,7 +1518,7 @@ app.start = function() {
   var self = this;
 
   this.init(function() {
-    self.component = React.renderComponent(
+    self.component = React.render(
       /* jshint ignore:start */
       <AppComponent />,
       /* jshint ignore:end */
